@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zero-Error Toroidal Grid Explorer</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f5;
+            color: #18181b;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 { margin-bottom: 0.5rem; }
+        p { color: #52525b; margin-bottom: 2rem; }
+        
+        .dashboard {
+            display: flex;
+            gap: 2rem;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            min-width: 250px;
+        }
+
+        .metric-card {
+            background: #f4f4f5;
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #2563eb;
+        }
+
+        .grid-container {
+            position: relative;
+            width: 400px;
+            height: 400px;
+            border: 2px solid #e4e4e7;
+            background: white;
+        }
+
+        .cell {
+            position: absolute;
+            width: 20%;
+            height: 20%;
+            border: 1px solid #e4e4e7;
+            box-sizing: border-box;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            z-index: 10;
+        }
+
+        .cell:hover {
+            background-color: #fef08a;
+        }
+
+        .cell.anchor {
+            background-color: #fbbf24;
+            border: 2px solid #b45309;
+        }
+
+        /* The 2x2 overlay blocks */
+        .block {
+            position: absolute;
+            background-color: rgba(59, 130, 246, 0.4); /* Semi-transparent blue */
+            pointer-events: none; /* Let clicks pass through to cells */
+            z-index: 5;
+        }
+
+        button {
+            padding: 0.75rem 1rem;
+            background-color: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        button:hover { background-color: #1d4ed8; }
+        button.secondary { background-color: #ef4444; }
+        button.secondary:hover { background-color: #b91c1c; }
+        
+        .slider-container { display: flex; flex-direction: column; gap: 0.5rem; }
+    </style>
+</head>
+<body>
+
+    <h1>Optimal Codeword Packing</h1>
+    <p>5x5 Toroidal Grid (Blocklength n=2)</p>
+
+    <div class="dashboard">
+        <div class="grid-container" id="grid">
+            </div>
+
+        <div class="controls">
+            <div class="slider-container">
+                <label for="m-slider"><strong>Messages (M): <span id="m-val">6</span></strong></label>
+                <input type="range" id="m-slider" min="5" max="10" value="6">
+            </div>
+
+            <div class="metric-card">
+                <div>Unique Cells (U)</div>
+                <div class="metric-value"><span id="u-val">0</span> / 25</div>
+            </div>
+
+            <div class="metric-card">
+                <div>Probability of Error (Pe)</div>
+                <div class="metric-value"><span id="pe-val">0.00%</span></div>
+            </div>
+
+            <button id="solve-btn">Auto-Solve (Brute Force)</button>
+            <button id="clear-btn" class="secondary">Clear Grid</button>
+        </div>
+    </div>
+
+    <script>
+        const GRID_SIZE = 5;
+        let M = 6;
+        let anchors = []; // Stores indices (0-24) of placed anchors
+        
+        const gridEl = document.getElementById('grid');
+        const mSlider = document.getElementById('m-slider');
+        const mValEl = document.getElementById('m-val');
+        const uValEl = document.getElementById('u-val');
+        const peValEl = document.getElementById('pe-val');
+
+        // Precompute masks for the brute force solver
+        const masks = [];
+        for (let i = 0; i < 25; i++) {
+            let x = Math.floor(i / 5);
+            let y = i % 5;
+            let mask = 0;
+            for(let dx of [0, 1]) {
+                for(let dy of [0, 1]) {
+                    let nx = (x + dx) % 5;
+                    let ny = (y + dy) % 5;
+                    mask |= (1 << (nx * 5 + ny));
+                }
+            }
+            masks.push(mask);
+        }
+
+        // Initialize Grid UI
+        function initGrid() {
+            gridEl.innerHTML = '';
+            for (let i = 0; i < 25; i++) {
+                let x = i % 5;
+                let y = Math.floor(i / 5);
+                
+                let cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.style.left = `${x * 20}%`;
+                cell.style.top = `${y * 20}%`;
+                cell.dataset.idx = i;
+                
+                cell.addEventListener('click', () => toggleAnchor(i));
+                gridEl.appendChild(cell);
+            }
+        }
+
+        function toggleAnchor(idx) {
+            const pos = anchors.indexOf(idx);
+            if (pos > -1) {
+                anchors.splice(pos, 1); // Remove if exists
+            } else {
+                if (anchors.length < M) {
+                    anchors.push(idx); // Add if under limit
+                } else {
+                    alert(`You can only place ${M} blocks!`);
+                }
+            }
+            render();
+        }
+
+        function render() {
+            // Update cells
+            document.querySelectorAll('.cell').forEach(cell => {
+                cell.classList.remove('anchor');
+                if (anchors.includes(parseInt(cell.dataset.idx))) {
+                    cell.classList.add('anchor');
+                }
+            });
+
+            // Remove old overlays
+            document.querySelectorAll('.block').forEach(b => b.remove());
+
+            // Draw 2x2 toroidal blocks
+            let combinedMask = 0;
+            anchors.forEach(idx => {
+                let bx = idx % 5;
+                let by = Math.floor(idx / 5);
+                
+                // Draw up to 4 rects to handle wrap-around
+                for(let dx of [0, 1]) {
+                    for(let dy of [0, 1]) {
+                        let nx = (bx + dx) % 5;
+                        let ny = (by + dy) % 5;
+                        combinedMask |= (1 << (nx * 5 + ny));
+                        
+                        let block = document.createElement('div');
+                        block.className = 'block';
+                        block.style.left = `${nx * 20}%`;
+                        block.style.top = `${ny * 20}%`;
+                        block.style.width = '20%';
+                        block.style.height = '20%';
+                        gridEl.appendChild(block);
+                    }
+                }
+            });
+
+            // Calculate Metrics
+            let U = 0;
+            let temp = combinedMask;
+            while(temp > 0) {
+                U += temp & 1;
+                temp >>= 1;
+            }
+
+            uValEl.innerText = U;
+            let pe = anchors.length > 0 ? Math.max(0, 1 - (U / (4 * M))) : 0;
+            peValEl.innerText = (pe * 100).toFixed(2) + '%';
+        }
+
+        // Brute Force DFS Solver
+        function solve() {
+            let maxU = 0;
+            let bestAnchors = [];
+            
+            // Helper to count set bits
+            const countBits = n => {
+                let c = 0;
+                while(n > 0) { c += n & 1; n >>= 1; }
+                return c;
+            };
+
+            function dfs(idx, selectedCount, currentMask, currentPath) {
+                if (selectedCount === M) {
+                    let u = countBits(currentMask);
+                    if (u > maxU) {
+                        maxU = u;
+                        bestAnchors = [...currentPath];
+                    }
+                    return;
+                }
+                
+                // Pruning
+                if (25 - idx < M - selectedCount) return;
+                
+                // Exclude
+                dfs(idx + 1, selectedCount, currentMask, currentPath);
+                
+                // Include
+                currentPath.push(idx);
+                dfs(idx + 1, selectedCount + 1, currentMask | masks[idx], currentPath);
+                currentPath.pop();
+            }
+
+            // Disable button during calculation to show it's "thinking"
+            const btn = document.getElementById('solve-btn');
+            btn.innerText = "Calculating...";
+            btn.disabled = true;
+
+            setTimeout(() => {
+                dfs(0, 0, 0, []);
+                anchors = bestAnchors;
+                render();
+                btn.innerText = "Auto-Solve (Brute Force)";
+                btn.disabled = false;
+            }, 50); // Small timeout to allow UI to update
+        }
+
+        // Event Listeners
+        mSlider.addEventListener('input', (e) => {
+            M = parseInt(e.target.value);
+            mValEl.innerText = M;
+            if (anchors.length > M) {
+                anchors = anchors.slice(0, M);
+            }
+            render();
+        });
+
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            anchors = [];
+            render();
+        });
+
+        document.getElementById('solve-btn').addEventListener('click', solve);
+
+        // Init
+        initGrid();
+        render();
+    </script>
+</body>
+</html>
